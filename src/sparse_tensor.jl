@@ -1,7 +1,7 @@
 using SparseArrays
 
 mutable struct SparseTensor{T,N} <: AbstractArray{T,N}
-    n::Int                     # number of elements
+    n::Int                     # number of non-zero elements
     dimensions::NTuple{N,Int32}# dimensions 
     indices::Vector{Int32}     # entry indices
     values::Vector{T}          # entry data
@@ -41,24 +41,14 @@ end
 
 function Base.getindex(A::SparseTensor{T}, I::Vararg{Int,N}) where T where N
     # TODO bound/dimension check
-    idx = 0
-    prod = 1
-    for i = 1:N
-        idx += prod * (I[i]-1)
-        prod *= A.dimensions[i]
-    end
-    return Base.getindex(A, idx+1)
+    idx = LinearIndices(A.dimensions)[I...]
+    return Base.getindex(A, idx)
 end
 
 function Base.setindex!(A::SparseTensor{T}, v::T, I::Vararg{Int,N}) where T where N
     # TODO bound/dimension check
-    idx = 0
-    prod = 1
-    for i = 1:N
-        idx += prod * (I[i]-1)
-        prod *= A.dimensions[i]
-    end
-    return Base.setindex!(A, v, idx+1)
+    idx = LinearIndices(A.dimensions)[I...]
+    return Base.setindex!(A, v, idx)
 end
 
 function Base.reshape(A::SparseTensor{T}, dims::Tuple{Int64, Vararg{Int64, N}} where N) where T
@@ -123,4 +113,26 @@ function Base.Array(A::SparseTensor{T}) where T
         dense[A.indices[i]] = A.values[i]
     end
     return dense
+end
+
+# permute dimensions
+function Base.permutedims(A::SparseTensor{T,N}, perm) where T where N
+    dest = SparseTensor{T,N}(A.n, A.dimensions, [], [])
+    permutedims!(dest, A, perm)
+    return dest
+end
+
+function Base.permutedims!(dest::SparseTensor{T,N}, src::AbstractArray, perm) where T where N
+    dest.n = src.n
+    dest.dimensions = Tuple(src.dimensions[perm[i]] for i=1:length(src.dimensions))
+    dest.values = copy(src.values)
+
+    dest.indices = zeros(Int32, dest.n)
+    for i = 1:dest.n
+        idx = src.indices[i]
+        idx_cart = CartesianIndices(src.dimensions)[idx]
+        idx_permuted = Tuple(Tuple(idx_cart)[perm[i]] for i=1:length(src.dimensions))
+        dest.indices[i] = LinearIndices(dest.dimensions)[idx_permuted...]
+    end
+    return dest
 end
