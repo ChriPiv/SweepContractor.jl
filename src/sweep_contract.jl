@@ -155,53 +155,167 @@ function sweep_contract!(TN::TensorNetwork, χ::Int, τ::Int;
         t.arr = reshape(t.arr,(prod(s[1:length(ind_do)]),s[length(ind_do)+1:end]...))
 
         if isempty(MPS_i)
+            # TODO DOES THIS HANDLE SPARSE ARRAYS WELL?
             MPS_t = splitMPStensor(MPS_t[1][1]*reshape(t.arr,(size(t.arr)...,1)))
             MPS_i = ind_up
         else
             lo = findfirst(isequal(i), MPS_i)
             hi = findlast(isequal(i), MPS_i)
+            MPS_i = [MPS_i[1:lo-1]; ind_up; MPS_i[hi+1:end]]
 
             isnothing(lo) && throw(InvalidTNError("Disconnected TN"))
 
-            X::Array{Float64} = MPS_t[lo]
-            for j ∈ lo+1:hi
-                finalsize = (size(X,1),size(X,2)*size(MPS_t[j],2),size(MPS_t[j],3))
-                X = reshape(X,(size(X,1)*size(X,2),size(X,3)))*
-                    reshape(MPS_t[j],(size(MPS_t[j],1),size(MPS_t[j],2)*size(MPS_t[j],3)))
-                X = reshape(X,finalsize)
-            end
-            X = permutedims(X,[1,3,2])
-            M = reshape(t.arr,(size(t.arr,1),prod(size(t.arr)[2:end])))
-            X = reshape(
-                reshape(X,(size(X,1)*size(X,2),size(X,3)))*M,
-                (size(X,1),size(X,2),size(M,2))
-            )
-            X = permutedims(X,[1,3,2])
-            X = reshape(X,(size(X,1),size(t.arr)[2:end]...,size(X,3)))
+            if typeof(t.arr) <: SparseTensor
+                # contract a sparse tensor into MPS
+                t.arr = reshape(t.arr, s)
+                N = t.arr.n
+                # TODO should we consider possibility of X being sparse?
+                X = zeros(Float64, (size(MPS_t[lo],1), N, size(MPS_t[hi],3)))
+                for j ∈ 1:N
+                    idx = t.arr.indices[j]
+                    idx_cart = Tuple(CartesianIndices(s)[idx])
+                    val = t.arr.values[j]
 
-            MPS_i = [MPS_i[1:lo-1]; ind_up; MPS_i[hi+1:end]]
-            if ndims(X)!=2
-                MPS_t = [MPS_t[1:lo-1]; splitMPStensor(X); MPS_t[hi+1:end]]
-            elseif isempty(MPS_i)
-                MPS_t=[reshape([X[1]],(1,1,1))]
-            elseif lo>1
-                s = size(MPS_t[lo-1])
-                MPS_t[lo-1] = reshape(
-                    reshape(MPS_t[lo-1],(s[1]*s[2],s[3]))*X,
-                    (s[1],s[2],size(X,2))
-                )
-                MPS_t = [MPS_t[1:lo-1]; MPS_t[hi+1:end]]
+                    Y = MPS_t[lo][:,idx_cart[1],:]
+                    for k ∈ 1:hi-lo
+                        Y = Y * MPS_t[lo+k][:,idx_cart[k+1],:]
+                    end
+                    X[:,j,:] = Y * val
+                end
+
+                if isempty(ind_up)
+                    X = permutedims(X,[1,3,2])
+                    X = reshape(
+                        reshape(X,(size(X,1)*size(X,2),size(X,3))) * ones(N),
+                        (size(X,1),size(X,2),1)
+                    )
+                    X = permutedims(X,[1,3,2])
+                    if isempty(MPS_i)
+                        # this was the last contraction
+                        MPS_t=[reshape([X[1]],(1,1,1))]
+                    elseif lo > 1
+                        # merge X with tensor to the left
+                        X = reshape(X, (size(X,1), size(X,3)))
+                        s = size(MPS_t[lo-1])
+                        MPS_t[lo-1] = reshape(
+                            reshape(MPS_t[lo-1],(s[1]*s[2],s[3]))*X,
+                            (s[1],s[2],size(X,2))
+                        )
+                        MPS_t = [MPS_t[1:lo-1]; MPS_t[hi+1:end]]
+                    else
+                        # merge X with tensor to the right
+                        X = reshape(X, (size(X,1), size(X,3)))
+                        s = size(MPS_t[hi+1])
+                        MPS_t[hi+1] = reshape(
+                            X*reshape(MPS_t[hi+1],(s[1],s[2]*s[3])),
+                            (size(X,1),s[2],s[3])
+                        )
+                        MPS_t = [MPS_t[1:lo-1]; MPS_t[hi+1:end]]
+                    end
+                elseif length(ind_up) == 1
+                    # X is the new tensor in the MPS
+                    Y = stzeros(Float64, (N,s[end]))
+                    for j ∈ 1:t.arr.n
+                        idx = t.arr.indices[j]
+                        idx_cart = Tuple(CartesianIndices(s)[idx])
+                        Y[j, idx_cart[end]] = 1.
+                    end
+                    X = permutedims(X,[1,3,2])
+                    X = reshape(
+                        reshape(X,(size(X,1)*size(X,2),size(X,3)))*Y,
+                        (size(X,1),size(X,2),size(Y,2))
+                    )
+                    X = permutedims(X,[1,3,2])
+                    MPS_t = [MPS_t[1:lo-1]; [X]; MPS_t[hi+1:end]]
+                else
+                    # we have to add new delta tensors into the MPS
+                    # X is merged into the first delta tensor
+                    χ1 = size(X,1)
+                    χ2 = size(X,3)
+                    v = MPS(undef, length(ind_up))
+
+                    # first tensor
+                    M = s[length(ind_do)+1]
+                    # TODO we could make these sparse. But always?
+                    δ = stzeros(Float64, (N, χ2, M, N, χ2))
+                    for i1 = 1:χ2 for i2 = 1:N
+                        idx = t.arr.indices[i2]
+                        idx_cart = Tuple(CartesianIndices(s)[idx])
+                        δ[i2,i1,idx_cart[length(ind_do)+1],i2,i1] = 1.
+                    end end
+                    δ = reshape(δ, (N*χ2,M*N*χ2))
+                    δ = reshape(X, (χ1,N*χ2)) * δ
+                    δ = reshape(δ, (χ1,M,N*χ2))
+                    v[1] = δ
+
+                    # middle tensors
+                    for j ∈ 2:length(ind_up)-1
+                        M = s[length(ind_do)+j]
+                        # TODO we could make these sparse. But always?
+                        δ = stzeros(Float64, (N, χ2, M, N, χ2))
+                        for i1 = 1:χ2 for i2 = 1:N
+                            idx = t.arr.indices[i2]
+                            idx_cart = Tuple(CartesianIndices(s)[idx])
+                            δ[i2,i1,idx_cart[length(ind_do)+j],i2,i1] = 1.
+                        end end
+                        v[j] = reshape(δ, (N*χ2,M,N*χ2))
+                    end
+                    
+                    # last tensor
+                    M = s[end]
+                    # TODO we could make these sparse. But always?
+                    δ = stzeros(Float64, (N, χ2, M, χ2))
+                    for i1 = 1:χ2 for i2 = 1:N
+                        idx = t.arr.indices[i2]
+                        idx_cart = Tuple(CartesianIndices(s)[idx])
+                        δ[i2,i1,idx_cart[end],i1] = 1.
+                    end end
+                    v[end] = reshape(δ, (N*χ2,M,χ2))
+
+                    MPS_t = [MPS_t[1:lo-1]; v; MPS_t[hi+1:end]]
+                end
             else
-                s = size(MPS_t[hi+1])
-                MPS_t[hi+1] = reshape(
-                    X*reshape(MPS_t[hi+1],(s[1],s[2]*s[3])),
-                    (size(X,1),s[2],s[3])
+                # contract a dense tensor into MPS
+                X::Array{Float64} = MPS_t[lo]
+                for j ∈ lo+1:hi
+                    finalsize = (size(X,1),size(X,2)*size(MPS_t[j],2),size(MPS_t[j],3))
+                    X = reshape(X,(size(X,1)*size(X,2),size(X,3)))*
+                        reshape(MPS_t[j],(size(MPS_t[j],1),size(MPS_t[j],2)*size(MPS_t[j],3)))
+                    X = reshape(X,finalsize)
+                end
+                X = permutedims(X,[1,3,2])
+                M = reshape(t.arr,(size(t.arr,1),prod(size(t.arr)[2:end])))
+                X = reshape(
+                    reshape(X,(size(X,1)*size(X,2),size(X,3)))*M,
+                    (size(X,1),size(X,2),size(M,2))
                 )
-                MPS_t = [MPS_t[1:lo-1]; MPS_t[hi+1:end]]
+                X = permutedims(X,[1,3,2])
+                X = reshape(X,(size(X,1),size(t.arr)[2:end]...,size(X,3)))
+
+                if ndims(X)!=2
+                    MPS_t = [MPS_t[1:lo-1]; splitMPStensor(X); MPS_t[hi+1:end]]
+                elseif isempty(MPS_i)
+                    MPS_t=[reshape([X[1]],(1,1,1))]
+                elseif lo>1
+                    s = size(MPS_t[lo-1])
+                    MPS_t[lo-1] = reshape(
+                        reshape(MPS_t[lo-1],(s[1]*s[2],s[3]))*X,
+                        (s[1],s[2],size(X,2))
+                    )
+                    MPS_t = [MPS_t[1:lo-1]; MPS_t[hi+1:end]]
+                else
+                    s = size(MPS_t[hi+1])
+                    MPS_t[hi+1] = reshape(
+                        X*reshape(MPS_t[hi+1],(s[1],s[2]*s[3])),
+                        (size(X,1),s[2],s[3])
+                    )
+                    MPS_t = [MPS_t[1:lo-1]; MPS_t[hi+1:end]]
+                end
             end
 
             if any(size.(MPS_t,3).>τ)
                 count += 1
+                # TODO DOES THIS HANDLE SPARSE ARRAYS WELL?
                 truncMPS!(MPS_t, χ)
                 if LinearAlgebra.norm(MPS_t[1])==0
                     return (0.0,typemin(Int))
