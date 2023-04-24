@@ -17,4 +17,8 @@ module SweepContractor
     # The sweep contraction algorithm
     include("sweep_contract.jl")
     include("sweep_contract_dangling.jl")
+
+    export SparseTensor, stzeros
+    # sparse tensor functionality
+    include("sparse_tensor.jl")
 end

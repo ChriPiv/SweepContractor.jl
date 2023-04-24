@@ -13,20 +13,20 @@ compatible with the labelling of the indices of `arr`.
 """
 mutable struct Tensor{T}
     adj::Vector{T}
-    arr::Array{Float64}
+    arr::AbstractArray{Float64}
     x::Float64
     y::Float64
 
     # Native float constructors
-    Tensor{T}(adj::Vector{T}, arr::Array{Float64}, x::Float64, y::Float64) where T =
+    Tensor{T}(adj::Vector{T}, arr::AbstractArray{Float64}, x::Float64, y::Float64) where T =
         new{T}(adj, arr, x, y)
-    Tensor(adj::Vector{T}, arr::Array{Float64}, x::Float64, y::Float64) where T =
+    Tensor(adj::Vector{T}, arr::AbstractArray{Float64}, x::Float64, y::Float64) where T =
         new{T}(adj, arr, x, y)
 
     # Promoted constructors
-    Tensor{T}(adj::Vector{T}, arr::Array{<:Real}, x::Real, y::Real) where T =
+    Tensor{T}(adj::Vector{T}, arr::AbstractArray{<:Real}, x::Real, y::Real) where T =
         new{T}(adj, float(arr), float(x), float(y))
-    Tensor(adj::Vector{T}, arr::Array{<:Real}, x::Real, y::Real) where T =
+    Tensor(adj::Vector{T}, arr::AbstractArray{<:Real}, x::Real, y::Real) where T =
         new{T}(adj, float(arr), float(x), float(y))
 end
 
