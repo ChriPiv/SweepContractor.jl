@@ -2,8 +2,8 @@ using SparseArrays
 
 mutable struct SparseTensor{T,N} <: AbstractArray{T,N}
     n::Int                     # number of non-zero elements
-    dimensions::NTuple{N,Int32}# dimensions 
-    indices::Vector{Int32}     # entry indices
+    dimensions::NTuple{N,Int64}# dimensions 
+    indices::Vector{Int64}     # entry indices
     values::Vector{T}          # entry data
 end
 
@@ -127,7 +127,7 @@ function Base.permutedims!(dest::SparseTensor{T,N}, src::AbstractArray, perm) wh
     dest.dimensions = Tuple(src.dimensions[perm[i]] for i=1:length(src.dimensions))
     dest.values = copy(src.values)
 
-    dest.indices = zeros(Int32, dest.n)
+    dest.indices = zeros(Int64, dest.n)
     for i = 1:dest.n
         idx = src.indices[i]
         idx_cart = CartesianIndices(src.dimensions)[idx]
